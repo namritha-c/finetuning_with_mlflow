@@ -1,5 +1,10 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 @dataclass
@@ -9,8 +14,7 @@ class PromptConfig:
         "output ONLY the SQL query that answers the question. "
         "Do not include any explanation, markdown formatting, or extra text."
     )
-    artifact_path: str = "prompts"
-    artifact_filename: str = "system_prompt.txt"
+    commit_message: str = "Registered via training run"
 
 
 @dataclass
@@ -64,9 +68,17 @@ class TrainingConfig:
 
 @dataclass
 class MLflowConfig:
-    tracking_uri: str = "http://192.168.1.50:5007"
+    tracking_uri: str = field(
+        default_factory=lambda: os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+    )
+    username: Optional[str] = field(
+        default_factory=lambda: os.getenv("MLFLOW_TRACKING_USERNAME")
+    )
+    password: Optional[str] = field(
+        default_factory=lambda: os.getenv("MLFLOW_TRACKING_PASSWORD")
+    )
     experiment_name: str = "LoRA_SQL_Finetuning"
     run_name: Optional[str] = None
+    prompt_registry_name: str = "sql-assistant-system-prompt"
     model_artifact_path: str = "lora_adapter"
     dataset_artifact_path: str = "dataset_info"
-    load_prompt_from_run_id: Optional[str] = None

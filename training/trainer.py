@@ -1,10 +1,47 @@
 from typing import Any, Dict, List, Optional
 
-import torch
 from datasets import Dataset
+from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
 from trl import SFTConfig, SFTTrainer
+import mlflow
+import torch
 
-from training.config import ModelConfig, TrainingConfig
+from .config import ModelConfig, TrainingConfig
+
+
+class MLflowStepCallback(TrainerCallback):
+    """
+    Streams per-step training metrics to the active MLflow run in real time.
+
+    Logs on every trainer log event (controlled by TrainingConfig.logging_steps):
+      - step_train_loss
+      - step_grad_norm
+      - step_learning_rate
+      - step_epoch
+    """
+
+    def on_log(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        logs: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> None:
+        if not logs:
+            return
+        step = state.global_step
+        metrics: Dict[str, float] = {}
+        if "loss" in logs:
+            metrics["step_train_loss"] = logs["loss"]
+        if "grad_norm" in logs:
+            metrics["step_grad_norm"] = logs["grad_norm"]
+        if "learning_rate" in logs:
+            metrics["step_learning_rate"] = logs["learning_rate"]
+        if "epoch" in logs:
+            metrics["step_epoch"] = logs["epoch"]
+        if metrics:
+            mlflow.log_metrics(metrics, step=step)
 
 
 class LoRATrainer:
@@ -49,6 +86,7 @@ class LoRATrainer:
         """
         Fit the LoRA model on train_dataset.
 
+        Each logged step is streamed to MLflow in real-time via MLflowStepCallback.
         Returns the raw metrics dict from TrainOutput.
         """
         sft_config = self._build_sft_config()
@@ -57,6 +95,7 @@ class LoRATrainer:
             train_dataset=train_dataset,
             args=sft_config,
             processing_class=self.tokenizer,
+            callbacks=[MLflowStepCallback()],
         )
         cfg = self.training_config
         print("Starting LoRA fine-tuning …")

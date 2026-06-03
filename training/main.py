@@ -2,29 +2,44 @@
 Entry point for LoRA fine-tuning with MLflow experiment tracking.
 
 Usage:
-    python -m training.main
-    # or from Fine_tuning/
-    python training/main.py
+    python -m training.main          (recommended, from project root)
+    python training/main.py          (also works, from project root)
 """
 
 import os
 import random
+import sys
 import time
 
 import torch
 
-from training.config import DataConfig, LoRAConfig, MLflowConfig, ModelConfig, PromptConfig, TrainingConfig
-from training.data_loader import DatasetLoader
-from training.evaluator import ModelEvaluator
-from training.mlflow_logger import MLflowLogger
-from training.model_loader import ModelLoader
-from training.trainer import LoRATrainer
-from training.visualizer import Visualizer
+# Ensure the project root (parent of this package) is on sys.path so that
+# `from training import ...` resolves correctly when the script is run
+# directly as `python training/main.py` instead of `python -m training.main`.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from training import (
+    DataConfig,
+    DatasetLoader,
+    LoRAConfig,
+    LoRATrainer,
+    MLflowConfig,
+    MLflowLogger,
+    ModelConfig,
+    ModelEvaluator,
+    ModelLoader,
+    PromptConfig,
+    TrainingConfig,
+    Visualizer,
+)
 
 
 def _setup_environment(seed: int = 42) -> None:
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    # CUDA_VISIBLE_DEVICES and TOKENIZERS_PARALLELISM are already in os.environ
+    # via load_dotenv() called at config import time; setdefault is a safe fallback (Use if needed).
+
     random.seed(seed)
     torch.manual_seed(seed)
     print(f"PyTorch : {torch.__version__}")
@@ -57,15 +72,11 @@ def main() -> None:
     mlflow_logger.log_data_config(data_config)
 
     # ------------------------------------------------------------------
-    # 3. System prompt — load from a previous MLflow run or use the default
+    # 3. System prompt — register in MLflow Prompt Registry, then load back
     # ------------------------------------------------------------------
-    if mlflow_config.load_prompt_from_run_id:
-        system_prompt = mlflow_logger.load_system_prompt(
-            mlflow_config.load_prompt_from_run_id, prompt_config
-        )
-    else:
-        system_prompt = prompt_config.text
-        mlflow_logger.log_system_prompt(prompt_config)
+    print("\n--- Registering system prompt ---")
+    mlflow_logger.register_system_prompt(prompt_config)
+    system_prompt = mlflow_logger.load_system_prompt_from_registry()
 
     # ------------------------------------------------------------------
     # 4. Dataset
@@ -107,7 +118,6 @@ def main() -> None:
     train_metrics = lora_trainer.train(train_dataset)
 
     mlflow_logger.log_training_metrics(train_metrics)
-    mlflow_logger.log_step_losses(lora_trainer.get_log_history())
 
     # ------------------------------------------------------------------
     # 8. Plots — training loss

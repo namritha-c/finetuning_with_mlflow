@@ -4,7 +4,7 @@ from typing import Any, Dict, List
 import torch
 from unsloth import FastLanguageModel
 
-from training.data_loader import DatasetLoader
+from training import DatasetLoader
 
 
 class ModelEvaluator:

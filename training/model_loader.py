@@ -3,7 +3,7 @@ from typing import Optional, Tuple
 import torch
 from unsloth import FastLanguageModel
 
-from training.config import LoRAConfig, ModelConfig
+from .config import LoRAConfig, ModelConfig
 
 
 class ModelLoader:

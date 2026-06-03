@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 import mlflow
 import mlflow.artifacts
 
-from training.config import DataConfig, LoRAConfig, MLflowConfig, ModelConfig, PromptConfig, TrainingConfig
+from .config import DataConfig, LoRAConfig, MLflowConfig, ModelConfig, PromptConfig, TrainingConfig
 
 
 class MLflowLogger:
@@ -17,8 +17,23 @@ class MLflowLogger:
     def __init__(self, config: MLflowConfig) -> None:
         self.config = config
         self._active_run: Optional[mlflow.ActiveRun] = None
+        self._configure_auth()
         mlflow.set_tracking_uri(config.tracking_uri)
         self._setup_experiment()
+
+    def _configure_auth(self) -> None:
+        """
+        Push MLflow credentials into os.environ so the HTTP tracking client
+        includes them in every request. This is a no-op when the variables are
+        already present (e.g. set directly in the shell), so it is safe to call
+        unconditionally.
+        """
+        if self.config.username:
+            os.environ["MLFLOW_TRACKING_USERNAME"] = self.config.username
+        if self.config.password:
+            os.environ["MLFLOW_TRACKING_PASSWORD"] = self.config.password
+        if self.config.username:
+            print(f"MLflow auth configured for user: '{self.config.username}'")
 
     # ------------------------------------------------------------------
     # Experiment / run lifecycle
@@ -40,7 +55,7 @@ class MLflowLogger:
     def start_run(self, run_name: Optional[str] = None) -> None:
         """Begin a new MLflow run under the configured experiment."""
         name = run_name or self.config.run_name
-        self._active_run = mlflow.start_run(run_name=name)
+        self._active_run = mlflow.start_run(log_system_metrics=True, run_name=name)
         print(f"MLflow run started — ID: {self._active_run.info.run_id}")
 
     def end_run(self) -> None:
@@ -148,43 +163,43 @@ class MLflowLogger:
         else:
             print(f"Warning: artifact not found, skipping: {local_path}")
 
-    def log_system_prompt(self, prompt_config: PromptConfig) -> None:
+    def register_system_prompt(self, prompt_config: PromptConfig) -> None:
         """
-        Persist the system prompt to MLflow in two ways:
-          - as a tracked parameter (first 500 chars, for quick diff in the UI)
-          - as a full plain-text artifact under prompts/system_prompt.txt
-        """
-        mlflow.log_param("prompt_system_prompt", prompt_config.text[:500])
+        Register (or create a new version of) the system prompt in the
+        MLflow Prompt Registry under the name set by MLflowConfig.prompt_registry_name.
 
-        local_path = prompt_config.artifact_filename
-        with open(local_path, "w") as fh:
-            fh.write(prompt_config.text)
-        mlflow.log_artifact(local_path, artifact_path=prompt_config.artifact_path)
-        os.remove(local_path)
+        Versions are immutable once created — MLflow auto-increments the version
+        number each time this is called with a changed template.
+        """
+        import mlflow.genai
+
+        prompt = mlflow.genai.register_prompt(
+            name=self.config.prompt_registry_name,
+            template=prompt_config.text,
+            commit_message=prompt_config.commit_message,
+            tags={"task": "text-to-sql", "role": "system"},
+        )
         print(
-            f"System prompt logged to MLflow under "
-            f"'{prompt_config.artifact_path}/{prompt_config.artifact_filename}'."
+            f"System prompt registered in MLflow Prompt Registry: "
+            f"'{self.config.prompt_registry_name}' v{prompt.version}"
         )
 
-    def load_system_prompt(self, run_id: str, prompt_config: PromptConfig) -> str:
+    def load_system_prompt_from_registry(self) -> str:
         """
-        Download the system_prompt.txt artifact from a previous MLflow run and
-        return its contents as a string.
+        Load the latest version of the system prompt from the MLflow Prompt Registry
+        and return the raw template string.
 
-        Args:
-            run_id: The MLflow run ID to retrieve the prompt from.
-            prompt_config: Used only to resolve the artifact path/filename.
+        URI format: prompts:/<name>@latest
         """
-        artifact_uri = (
-            f"runs:/{run_id}"
-            f"/{prompt_config.artifact_path}"
-            f"/{prompt_config.artifact_filename}"
+        import mlflow.genai
+
+        uri = f"prompts:/{self.config.prompt_registry_name}@latest"
+        prompt = mlflow.genai.load_prompt(uri)
+        print(
+            f"System prompt loaded from MLflow Prompt Registry: "
+            f"'{self.config.prompt_registry_name}@latest' (v{prompt.version})"
         )
-        local_path = mlflow.artifacts.download_artifacts(artifact_uri)
-        with open(local_path) as fh:
-            prompt = fh.read().strip()
-        print(f"System prompt loaded from MLflow run '{run_id}':\n  {prompt[:80]}…")
-        return prompt
+        return prompt.template
 
     def log_dataset_artifact(
         self,

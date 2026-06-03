@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 
 from datasets import Dataset, load_dataset
 
-from training.config import DataConfig
+from training import DataConfig
 
 
 class DatasetLoader:
