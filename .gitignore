@@ -27,10 +27,8 @@ ENV/
 lora_sql_checkpoints/
 /tmp/lora_adapter/
 
-# Generated plots
-training_loss.png
-accuracy_comparison.png
-summary.png
+# Generated plots (saved under outputs/plots/)
+outputs/
 
 # MLflow local store (if ever used instead of remote)
 mlruns/

@@ -60,8 +60,12 @@ def main() -> None:
 
     _setup_environment(seed=data_config.seed)
 
+    # All local output files (plots, etc.) go here — keeps the project root clean.
+    plots_dir = os.path.join(_PROJECT_ROOT, "outputs", "plots")
+    os.makedirs(plots_dir, exist_ok=True)
+
     # ------------------------------------------------------------------
-    # 2. MLflow — open run and log all configs upfront
+    # 2. MLflow — open training run and log all configs upfront
     # ------------------------------------------------------------------
     mlflow_logger = MLflowLogger(mlflow_config)
     mlflow_logger.start_run(run_name=f"lora_sql_{int(time.time())}")
@@ -79,13 +83,13 @@ def main() -> None:
     system_prompt = mlflow_logger.load_system_prompt_from_registry()
 
     # ------------------------------------------------------------------
-    # 4. Dataset
+    # 4. Dataset — load and log to MLflow with full lineage
     # ------------------------------------------------------------------
     print("\n--- Loading dataset ---")
     data_loader = DatasetLoader(data_config, system_prompt=system_prompt)
     data_loader.load()
 
-    mlflow_logger.log_dataset_artifact(data_loader.train_data, data_loader.test_data)
+    mlflow_logger.log_dataset(data_loader.train_data, data_loader.test_data, data_config)
 
     # ------------------------------------------------------------------
     # 5. Base model — load and evaluate BEFORE fine-tuning
@@ -120,34 +124,47 @@ def main() -> None:
     mlflow_logger.log_training_metrics(train_metrics)
 
     # ------------------------------------------------------------------
-    # 8. Plots — training loss
+    # 8. Training loss plot
     # ------------------------------------------------------------------
-    loss_plot_path = "training_loss.png"
+    loss_plot_path = os.path.join(plots_dir, "training_loss.png")
     Visualizer.plot_training_loss(lora_trainer.get_log_history(), save_path=loss_plot_path)
     mlflow_logger.log_artifact(loss_plot_path, artifact_subdir="plots")
 
     # ------------------------------------------------------------------
-    # 9. Fine-tuned model evaluation
+    # 9. Log final model to MLflow (transformers flavor)
     # ------------------------------------------------------------------
+    print("\n--- Logging final model to MLflow ---")
+    mlflow_logger.log_final_model(model_loader, tokenizer)
+
+    # Capture the training run ID before closing the run so the eval run
+    # can reference it in its tags.
+    training_run_id = mlflow_logger.run_id
+    mlflow_logger.end_run()
+
+    # ------------------------------------------------------------------
+    # 10. Evaluation run — separate run tagged as "evaluation"
+    # ------------------------------------------------------------------
+    mlflow_logger.start_eval_run(training_run_id)
+
     print("\n--- Evaluating fine-tuned model ---")
     ft_evaluator = ModelEvaluator(model_loader.model, tokenizer, data_loader)
     finetuned_eval = ft_evaluator.evaluate(data_loader.test_data, label="Fine-Tuned Model")
     ft_evaluator.print_sample_outputs(finetuned_eval, n=3, label="Fine-Tuned Model")
 
     # ------------------------------------------------------------------
-    # 10. Log evaluation metrics and visualisations
+    # 11. Log evaluation metrics and visualisations
     # ------------------------------------------------------------------
     mlflow_logger.log_evaluation_metrics(
         base_eval, finetuned_eval, total_params, trainable_params
     )
 
-    acc_plot_path = "accuracy_comparison.png"
+    acc_plot_path = os.path.join(plots_dir, "accuracy_comparison.png")
     Visualizer.plot_accuracy_comparison(
         base_eval["accuracy"], finetuned_eval["accuracy"], save_path=acc_plot_path
     )
     mlflow_logger.log_artifact(acc_plot_path, artifact_subdir="plots")
 
-    summary_plot_path = "summary.png"
+    summary_plot_path = os.path.join(plots_dir, "summary.png")
     Visualizer.plot_summary(
         base_acc=base_eval["accuracy"],
         ft_acc=finetuned_eval["accuracy"],
@@ -159,13 +176,7 @@ def main() -> None:
     mlflow_logger.log_artifact(summary_plot_path, artifact_subdir="plots")
 
     # ------------------------------------------------------------------
-    # 11. Log LoRA adapter weights to MLflow
-    # ------------------------------------------------------------------
-    print("\n--- Logging model adapter to MLflow ---")
-    mlflow_logger.log_model_adapter(model_loader)
-
-    # ------------------------------------------------------------------
-    # 12. Print final summary and close run
+    # 12. Print final summary and close eval run
     # ------------------------------------------------------------------
     base_acc = base_eval["accuracy"]
     ft_acc = finetuned_eval["accuracy"]

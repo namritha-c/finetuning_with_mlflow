@@ -81,4 +81,5 @@ class MLflowConfig:
     run_name: Optional[str] = None
     prompt_registry_name: str = "sql-assistant-system-prompt"
     model_artifact_path: str = "lora_adapter"
+    registered_model_name: str = "lora-sql-qwen2.5"
     dataset_artifact_path: str = "dataset_info"

@@ -1,17 +1,40 @@
 import json
 import os
+import shutil
+import traceback
 from typing import Any, Dict, List, Optional
 
 import mlflow
 import mlflow.artifacts
+import mlflow.pyfunc
 
 from .config import DataConfig, LoRAConfig, MLflowConfig, ModelConfig, PromptConfig, TrainingConfig
+
+
+class _LoRAAdapterModel(mlflow.pyfunc.PythonModel):
+    """
+    Minimal MLflow PythonModel wrapper for a LoRA adapter.
+
+    Packages the adapter weights as a first-class MLflow model so the run
+    artifact has a valid MLmodel file and can be registered and versioned in
+    the MLflow Model Registry.
+
+    To load the adapter for inference:
+        import mlflow.pyfunc
+        from peft import PeftModel
+        loaded = mlflow.pyfunc.load_model("models:/lora-sql-qwen2.5/latest")
+        adapter_path = loaded._model_impl.context.artifacts["lora_adapter"]
+        model = PeftModel.from_pretrained(base_model, adapter_path)
+    """
+
+    def predict(self, context, model_input, params=None):
+        return {"adapter_path": context.artifacts["lora_adapter"]}
 
 
 class MLflowLogger:
     """
     Centralises all MLflow interactions: experiment setup, param/metric logging,
-    artifact uploads, and model registration.
+    artifact uploads, dataset tracking, model logging, and eval run management.
     """
 
     def __init__(self, config: MLflowConfig) -> None:
@@ -52,23 +75,51 @@ class MLflowLogger:
             print(f"Using existing MLflow experiment: '{self.config.experiment_name}'")
         mlflow.set_experiment(self.config.experiment_name)
 
+    @property
+    def run_id(self) -> Optional[str]:
+        """Return the active run ID, or None if no run is open."""
+        return self._active_run.info.run_id if self._active_run else None
+
     def start_run(self, run_name: Optional[str] = None) -> None:
-        """Begin a new MLflow run under the configured experiment."""
+        """Begin a new training run under the configured experiment."""
         name = run_name or self.config.run_name
-        self._active_run = mlflow.start_run(log_system_metrics=True, run_name=name)
+        self._active_run = mlflow.start_run(
+            run_name=name,
+            log_system_metrics=True,
+            tags={"run_type": "training"},
+        )
         print(f"MLflow run started — ID: {self._active_run.info.run_id}")
+
+    def start_eval_run(self, training_run_id: str, run_name: Optional[str] = None) -> None:
+        """
+        Open a separate evaluation run in the same experiment.
+
+        The run is tagged with run_type=evaluation and linked back to the
+        training run via the training_run_id tag so both are easily correlated
+        in the MLflow UI.
+        """
+        name = run_name or f"eval_{training_run_id[:8]}"
+        self._active_run = mlflow.start_run(
+            run_name=name,
+            tags={
+                "run_type": "evaluation",
+                "training_run_id": training_run_id,
+            },
+        )
+        print(f"MLflow eval run started — ID: {self._active_run.info.run_id}")
 
     def end_run(self) -> None:
         """Finalise the current run and print a link to the UI."""
         if self._active_run:
             run_id = self._active_run.info.run_id
             mlflow.end_run()
+            exp = mlflow.get_experiment_by_name(self.config.experiment_name)
             ui_url = (
                 f"{self.config.tracking_uri}/#/experiments/"
-                f"{mlflow.get_experiment_by_name(self.config.experiment_name).experiment_id}"
-                f"/runs/{run_id}"
+                f"{exp.experiment_id}/runs/{run_id}"
             )
             print(f"MLflow run complete.\n  View at: {ui_url}")
+            self._active_run = None
 
     # ------------------------------------------------------------------
     # Config / parameter logging
@@ -126,12 +177,6 @@ class MLflowLogger:
             "train_steps_per_second": metrics.get("train_steps_per_second", 0.0),
         })
 
-    def log_step_losses(self, log_history: List[Dict[str, Any]]) -> None:
-        """Log per-step training loss as a metric time series."""
-        for entry in log_history:
-            if "loss" in entry:
-                mlflow.log_metric("step_train_loss", entry["loss"], step=entry["step"])
-
     def log_evaluation_metrics(
         self,
         base_eval: Dict[str, Any],
@@ -162,6 +207,10 @@ class MLflowLogger:
             mlflow.log_artifact(local_path, artifact_path=artifact_subdir or None)
         else:
             print(f"Warning: artifact not found, skipping: {local_path}")
+
+    # ------------------------------------------------------------------
+    # Prompt registry
+    # ------------------------------------------------------------------
 
     def register_system_prompt(self, prompt_config: PromptConfig) -> None:
         """
@@ -201,17 +250,61 @@ class MLflowLogger:
         )
         return prompt.template
 
-    def log_dataset_artifact(
+    # ------------------------------------------------------------------
+    # Dataset logging
+    # ------------------------------------------------------------------
+
+    def log_dataset(
+        self,
+        train_data,
+        test_data,
+        data_config: DataConfig,
+    ) -> None:
+        """
+        Log train and test splits to MLflow using the Dataset Tracking API
+        (mlflow.log_input + mlflow.data.from_huggingface).
+
+        This creates proper dataset lineage in the MLflow UI — the Inputs tab
+        will show source, split, size, and a direct link to the HuggingFace hub.
+        Falls back to a JSON artifact when the HuggingFace data module is
+        unavailable.
+        """
+        try:
+            from mlflow.data.huggingface_dataset import from_huggingface
+
+            train_ds = from_huggingface(
+                train_data,
+                path=data_config.dataset_name,
+                targets="answer",
+                name=f"{data_config.dataset_name}_train",
+            )
+            mlflow.log_input(train_ds, context="training", tags={"split": "train"})
+
+            test_ds = from_huggingface(
+                test_data,
+                path=data_config.dataset_name,
+                targets="answer",
+                name=f"{data_config.dataset_name}_test",
+            )
+            mlflow.log_input(test_ds, context="evaluation", tags={"split": "test"})
+
+            print(
+                f"Dataset logged via MLflow Data API: "
+                f"{len(train_data):,} train / {len(test_data):,} test  "
+                f"({data_config.dataset_name})"
+            )
+
+        except Exception as exc:
+            print(f"Warning: mlflow.data.from_huggingface failed ({exc}), falling back to JSON artifact.")
+            self._log_dataset_json_fallback(train_data, test_data)
+
+    def _log_dataset_json_fallback(
         self,
         train_data,
         test_data,
         sample_n: int = 5,
         local_filename: str = "dataset_info.json",
     ) -> None:
-        """
-        Serialise dataset statistics and a small sample of training examples,
-        then upload as a JSON artifact.
-        """
         payload = {
             "dataset_name": train_data.info.dataset_name if hasattr(train_data, "info") else "unknown",
             "train_size": len(train_data),
@@ -232,14 +325,56 @@ class MLflowLogger:
         os.remove(local_filename)
         print(f"Dataset artifact logged to MLflow ({len(train_data)} train, {len(test_data)} test).")
 
-    def log_model_adapter(self, model_loader, tmp_dir: str = "/tmp/lora_adapter") -> None:
+    # ------------------------------------------------------------------
+    # Model logging
+    # ------------------------------------------------------------------
+
+    def log_final_model(self, model_loader, tokenizer, tmp_dir: str = "/tmp/lora_adapter") -> None:
         """
-        Save the LoRA adapter weights locally, upload them as MLflow artifacts,
-        then clean up the temporary directory.
+        Save the LoRA adapter weights and register them in the MLflow Model Registry.
+
+        mlflow.transformers.log_model is intentionally skipped: 4-bit quantized
+        PEFT models (bitsandbytes) cannot be serialised by that flavor.
+        Instead, mlflow.pyfunc.log_model wraps the adapter files with a valid
+        MLmodel manifest so the artifact can be registered and versioned in the
+        Model Registry in one step via registered_model_name.
         """
+        # Always start from a clean directory so stale files from a previous
+        # run cannot pollute the artifact.
+        if os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir)
+        os.makedirs(tmp_dir, exist_ok=True)
+
         try:
             model_loader.save_adapter(tmp_dir)
-            mlflow.log_artifacts(tmp_dir, artifact_path=self.config.model_artifact_path)
-            print(f"LoRA adapter logged to MLflow under '{self.config.model_artifact_path}'.")
+
+            saved_files = os.listdir(tmp_dir)
+            if not saved_files:
+                raise RuntimeError(f"save_adapter() produced no files in {tmp_dir}.")
+            print(f"Adapter files saved: {saved_files}")
+
+            mlflow.pyfunc.log_model(
+                artifact_path=self.config.model_artifact_path,
+                python_model=_LoRAAdapterModel(),
+                artifacts={"lora_adapter": tmp_dir},
+                registered_model_name=self.config.registered_model_name,
+                metadata={
+                    "base_model": model_loader.model_config.name,
+                    "adapter_type": "lora",
+                    "task": "text-to-sql",
+                    "framework": "unsloth+peft",
+                },
+            )
+            print(
+                f"Model logged and registered in MLflow Model Registry: "
+                f"'{self.config.registered_model_name}'."
+            )
         except Exception as exc:
-            print(f"Warning: could not log model adapter to MLflow — {exc}")
+            print(f"ERROR: could not log/register model in MLflow — {exc}")
+            traceback.print_exc()
+
+    def log_step_losses(self, log_history: List[Dict[str, Any]]) -> None:
+        """Log per-step training loss as a metric time series (batch, post-training)."""
+        for entry in log_history:
+            if "loss" in entry:
+                mlflow.log_metric("step_train_loss", entry["loss"], step=entry["step"])
