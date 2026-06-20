@@ -33,12 +33,13 @@ class ModelEvaluator:
         new_tokens = outputs[0][inputs["input_ids"].shape[1]:]
         return self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
-    def evaluate(self, test_data, label: str = "Model") -> Dict[str, Any]:
+    def evaluate(self, label: str = "Model") -> Dict[str, Any]:
         """
         Evaluate the model over the entire test set using exact-match accuracy.
 
         Returns a dict with accuracy, correct count, timing, and per-example results.
         """
+        test_data = self.data_loader.test_data
         FastLanguageModel.for_inference(self.model)
         correct = 0
         results: List[Dict[str, Any]] = []
@@ -46,7 +47,7 @@ class ModelEvaluator:
 
         for i, example in enumerate(test_data):
             predicted = self.generate_sql(example)
-            expected = example["answer"]
+            expected = example[self.data_loader.config.target_column]
 
             pred_norm = DatasetLoader.normalize_sql(predicted)
             exp_norm = DatasetLoader.normalize_sql(expected)
@@ -91,5 +92,5 @@ class ModelEvaluator:
             print(f"--- Example {i + 1} [{status}] ---")
             print(f"  Question: {r['question']}")
             print(f"  Expected: {r['expected']}")
-            print(f"  Got:      {r['predicted'][:200]}")
+            print(f"  Got:      {r['predicted']}")
             print()

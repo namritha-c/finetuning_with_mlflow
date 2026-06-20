@@ -15,11 +15,12 @@ class PromptConfig:
         "Do not include any explanation, markdown formatting, or extra text."
     )
     commit_message: str = "Registered via training run"
+    version: str = "latest"
 
 
 @dataclass
 class ModelConfig:
-    name: str = "unsloth/Qwen2.5-3B-Instruct"
+    name: str = "unsloth/Qwen2.5-0.5B-Instruct"
     max_seq_length: int = 1024
     load_in_4bit: bool = True
     dtype: Optional[str] = None
@@ -42,7 +43,8 @@ class LoRAConfig:
 
 @dataclass
 class DataConfig:
-    dataset_name: str = "b-mc2/sql-create-context"
+    dataset_name: str = "c"
+    target_column: str = "answer"
     num_train: int = 5000
     num_test: int = 500
     seed: int = 42
@@ -68,8 +70,9 @@ class TrainingConfig:
 
 @dataclass
 class MLflowConfig:
+    # Authentication related configs
     tracking_uri: str = field(
-        default_factory=lambda: os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+        default_factory=lambda: os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5007")
     )
     username: Optional[str] = field(
         default_factory=lambda: os.getenv("MLFLOW_TRACKING_USERNAME")
@@ -77,9 +80,19 @@ class MLflowConfig:
     password: Optional[str] = field(
         default_factory=lambda: os.getenv("MLFLOW_TRACKING_PASSWORD")
     )
-    experiment_name: str = "LoRA_SQL_Finetuning"
-    run_name: Optional[str] = None
+
+    # Project related configs
+    project_name: str = "SQL_Finetuning_Project"
+    experiment_name: str = "SQL_Finetuning"
+    description: str = "Fine tuning qwen model for SQL query prediction."
+    run_name: Optional[str] = "sql_finetuning"
+
+    # Prompt registry related configs
     prompt_registry_name: str = "sql-assistant-system-prompt"
-    model_artifact_path: str = "lora_adapter"
-    registered_model_name: str = "lora-sql-qwen2.5"
+
+    # Model related configs
+    model_artifact_path: str = "model_adapter"
+    registered_model_name: str = "sql-qwen1.5"
+
+    # Dataset related configs
     dataset_artifact_path: str = "dataset_info"

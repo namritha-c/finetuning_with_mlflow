@@ -1,14 +1,18 @@
 import json
 import os
 import shutil
+import time
 import traceback
 from typing import Any, Dict, List, Optional
 
 import mlflow
 import mlflow.artifacts
+import mlflow.genai
 import mlflow.pyfunc
 
+
 from .config import DataConfig, LoRAConfig, MLflowConfig, ModelConfig, PromptConfig, TrainingConfig
+from .model_loader import ModelLoader
 
 
 class _LoRAAdapterModel(mlflow.pyfunc.PythonModel):
@@ -68,7 +72,8 @@ class MLflowLogger:
         if experiment is None:
             mlflow.create_experiment(
                 self.config.experiment_name,
-                tags={"project": "LoRA_SQL_Finetuning", "framework": "unsloth+trl"},
+                tags={"project": self.config.project_name, "framework": "unsloth+trl"},
+                description=self.config.description,
             )
             print(f"Created MLflow experiment: '{self.config.experiment_name}'")
         else:
@@ -80,11 +85,11 @@ class MLflowLogger:
         """Return the active run ID, or None if no run is open."""
         return self._active_run.info.run_id if self._active_run else None
 
-    def start_run(self, run_name: Optional[str] = None) -> None:
+    def start_run(self) -> None:
         """Begin a new training run under the configured experiment."""
-        name = run_name or self.config.run_name
+        run_name=f"{self.config.run_name}_{int(time.time())}"
         self._active_run = mlflow.start_run(
-            run_name=name,
+            run_name=run_name,
             log_system_metrics=True,
             tags={"run_type": "training"},
         )
@@ -220,8 +225,6 @@ class MLflowLogger:
         Versions are immutable once created — MLflow auto-increments the version
         number each time this is called with a changed template.
         """
-        import mlflow.genai
-
         prompt = mlflow.genai.register_prompt(
             name=self.config.prompt_registry_name,
             template=prompt_config.text,
@@ -233,16 +236,14 @@ class MLflowLogger:
             f"'{self.config.prompt_registry_name}' v{prompt.version}"
         )
 
-    def load_system_prompt_from_registry(self) -> str:
+    def load_system_prompt_from_registry(self, prompt_config: PromptConfig) -> str:
         """
         Load the latest version of the system prompt from the MLflow Prompt Registry
         and return the raw template string.
 
         URI format: prompts:/<name>@latest
         """
-        import mlflow.genai
-
-        uri = f"prompts:/{self.config.prompt_registry_name}@latest"
+        uri = f"prompts:/{self.config.prompt_registry_name}@{prompt_config.version}"
         prompt = mlflow.genai.load_prompt(uri)
         print(
             f"System prompt loaded from MLflow Prompt Registry: "
@@ -275,7 +276,7 @@ class MLflowLogger:
             train_ds = from_huggingface(
                 train_data,
                 path=data_config.dataset_name,
-                targets="answer",
+                targets=data_config.target_column,
                 name=f"{data_config.dataset_name}_train",
             )
             mlflow.log_input(train_ds, context="training", tags={"split": "train"})
@@ -283,7 +284,7 @@ class MLflowLogger:
             test_ds = from_huggingface(
                 test_data,
                 path=data_config.dataset_name,
-                targets="answer",
+                targets=data_config.target_column,
                 name=f"{data_config.dataset_name}_test",
             )
             mlflow.log_input(test_ds, context="evaluation", tags={"split": "test"})
@@ -329,7 +330,7 @@ class MLflowLogger:
     # Model logging
     # ------------------------------------------------------------------
 
-    def log_final_model(self, model_loader, tokenizer, tmp_dir: str = "/tmp/lora_adapter") -> None:
+    def log_final_model(self, model_loader: ModelLoader, tokenizer, tmp_dir: str = "/tmp/lora_adapter") -> None:
         """
         Save the LoRA adapter weights and register them in the MLflow Model Registry.
 

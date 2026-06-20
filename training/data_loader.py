@@ -19,10 +19,12 @@ class DatasetLoader:
         """Download, shuffle and split the dataset into train/test partitions."""
         dataset = load_dataset(self.config.dataset_name, split="train")
         dataset = dataset.shuffle(seed=self.config.seed)
-        self.train_data = dataset.select(range(self.config.num_train))
+
+        # Select the train dataset and test dataset
+        self.train_data = dataset.select(range(self.config.num_train)) # Count of train dataset
         self.test_data = dataset.select(
             range(self.config.num_train, self.config.num_train + self.config.num_test)
-        )
+        ) # Dataset count of test dataset
         print(f"Dataset loaded: {self.config.dataset_name}")
         print(f"  Train: {len(self.train_data):,} | Test: {len(self.test_data):,}")
 

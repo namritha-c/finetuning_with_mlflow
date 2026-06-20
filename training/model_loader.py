@@ -40,9 +40,7 @@ class ModelLoader:
             use_gradient_checkpointing=self.lora_config.use_gradient_checkpointing,
             random_state=seed,
         )
-        total, trainable = self.get_parameter_counts()
         print(f"LoRA adapters applied.")
-        print(f"  Trainable: {trainable:,} / {total:,} ({trainable / total * 100:.4f}%)")
 
     def get_parameter_counts(self) -> Tuple[int, int]:
         """Return (total_params, trainable_params) for the current model state."""

@@ -68,8 +68,9 @@ def main() -> None:
     # 2. MLflow — open training run and log all configs upfront
     # ------------------------------------------------------------------
     mlflow_logger = MLflowLogger(mlflow_config)
-    mlflow_logger.start_run(run_name=f"lora_sql_{int(time.time())}")
+    mlflow_logger.start_run()
 
+    # Logging using log_params() method
     mlflow_logger.log_model_config(model_config)
     mlflow_logger.log_lora_config(lora_config)
     mlflow_logger.log_training_config(training_config)
@@ -80,7 +81,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     print("\n--- Registering system prompt ---")
     mlflow_logger.register_system_prompt(prompt_config)
-    system_prompt = mlflow_logger.load_system_prompt_from_registry()
+    system_prompt = mlflow_logger.load_system_prompt_from_registry(prompt_config)
 
     # ------------------------------------------------------------------
     # 4. Dataset — load and log to MLflow with full lineage
@@ -100,7 +101,7 @@ def main() -> None:
 
     print("\n--- Evaluating base model ---")
     base_evaluator = ModelEvaluator(model, tokenizer, data_loader)
-    base_eval = base_evaluator.evaluate(data_loader.test_data, label="Base Model")
+    base_eval = base_evaluator.evaluate(label="Base Model")
     base_evaluator.print_sample_outputs(base_eval, n=3, label="Base Model")
 
     # ------------------------------------------------------------------
@@ -109,6 +110,8 @@ def main() -> None:
     print("\n--- Applying LoRA adapters ---")
     model_loader.apply_lora(seed=training_config.seed)
     total_params, trainable_params = model_loader.get_parameter_counts()
+    print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({trainable_params / total_params * 100:.4f}%)")
+
 
     print("\n--- Preparing training dataset ---")
     train_dataset = data_loader.prepare_training_dataset(tokenizer)
@@ -122,13 +125,6 @@ def main() -> None:
     train_metrics = lora_trainer.train(train_dataset)
 
     mlflow_logger.log_training_metrics(train_metrics)
-
-    # ------------------------------------------------------------------
-    # 8. Training loss plot
-    # ------------------------------------------------------------------
-    loss_plot_path = os.path.join(plots_dir, "training_loss.png")
-    Visualizer.plot_training_loss(lora_trainer.get_log_history(), save_path=loss_plot_path)
-    mlflow_logger.log_artifact(loss_plot_path, artifact_subdir="plots")
 
     # ------------------------------------------------------------------
     # 9. Log final model to MLflow (transformers flavor)
@@ -148,7 +144,7 @@ def main() -> None:
 
     print("\n--- Evaluating fine-tuned model ---")
     ft_evaluator = ModelEvaluator(model_loader.model, tokenizer, data_loader)
-    finetuned_eval = ft_evaluator.evaluate(data_loader.test_data, label="Fine-Tuned Model")
+    finetuned_eval = ft_evaluator.evaluate(label="Fine-Tuned Model")
     ft_evaluator.print_sample_outputs(finetuned_eval, n=3, label="Fine-Tuned Model")
 
     # ------------------------------------------------------------------
